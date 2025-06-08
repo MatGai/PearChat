@@ -3,7 +3,9 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <errno.h>
 
 //////////////////////////////////////////
 //
@@ -38,7 +40,7 @@ static LOGGER_STATE GlobalLoggerState = { 0 };
 
 // Simple mapping of log levels to names
 static 
-const char* LOG_LEVEL_NAMES[] = {
+PCSTR LOG_LEVEL_NAMES[] = {
     "NONE",
     "TRACE",
     "DEBUG",
@@ -67,11 +69,11 @@ LoggerTimestamp(
 {
     if (Buffer == NULL || BufferSize < TIMESTAMP_BUFFER_SIZE)
     {
-        return; // Invalid buffer or size
+        return FALSE; // Invalid buffer or size
     }
 
     SYSTEMTIME SystemTime;
-    GetLocalTime_s(&SystemTime);
+    GetLocalTime(&SystemTime);
 
     INT Result = _snprintf_s(
         Buffer,
@@ -133,7 +135,7 @@ LoggerCreateFilename(
     }
 
     CHAR DateString[TIMESTAMP_BUFFER_SIZE] = { 0 };
-    if (!LoggerGetDateString(SystemTime, DateString, sizeof(DateString)))
+    if (!LoggerDateString(SystemTime, DateString, sizeof(DateString)))
     {
         return FALSE;
     }
@@ -400,164 +402,286 @@ LoggerTryRotation(
     }
 
     CHAR NewFilename[MAXIMUM_FILENAME_SIZE] = { 0 };
-    if( !LoggerCreateFilename( &CurrentTime, NewFilename, sizeof( NewFilename ) ) )
+    if( !LoggerCreateRotateFile(NewFilename, sizeof(NewFilename)) )
     {
         return FALSE; // Failed to create new filename
     }
 
-    if ( fopen_s(&GlobalLoggerState.FileStream, NewFilename, "a") != 0 )
+    errno_t ErrorOpen = fopen_s(&GlobalLoggerState.FileStream, NewFilename, "a");
+    if ( ErrorOpen != 0 || GlobalLoggerState.FileStream == NULL )
     {
         return FALSE; // Failed to open new log file
     }
+
+    strncpy_s(
+        GlobalLoggerState.CurrentFilename,
+        sizeof(GlobalLoggerState.CurrentFilename),
+        NewFilename,
+        _TRUNCATE
+    );
+
+    GlobalLoggerState.LastRotationTime = CurrentTime; // Update last rotation time
+
+    LoggerCleanUpDatedFiles(); // Clean up old files
+
+    return TRUE;
 }
 
 /**
 *
 */
-static 
-void
-Logger__WriteToFile(
-    LOG_LEVEL Level,
-    const char* Filename,
-    __int64 LineNumber,
-    const char* Format,
-    va_list Args
+static
+VOID
+LoggerWriteToFile(
+    _In_ LOG_LEVEL Level,
+    _In_ PCSTR Filename,
+    _In_ ULONG LineNumber,
+    _In_ PCSTR Format,
+    _In_ va_list Args
 )
 {
-    if (gLoggerFileStream == NULL)
+    if( Filename == NULL || Format == NULL )
     {
-        return; // No file stream to write to
+        return; // Invalid parameters
     }
-    
-    char Timestamp[TIMESTAMP_BUFFER_SIZE] = { 0 };
-    LoggerTimestamp(Timestamp);
-    
-    char LogMessage[2048] = { 0 };
-    vsnprintf_s(LogMessage, sizeof(LogMessage), _TRUNCATE, Format, Args);
-    
-    EnterCriticalSection(&gLoggerLock);
 
-    LoggerTryRotation();
+    if( Level < LOG_LEVEL_NONE || Level > LOG_LEVEL_FATAL )
+    {
+        return; // Invalid log level
+    }
 
-    fprintf(
-        gLoggerFileStream,
-        "[%s] [%s:%d] [%s] %s\n",
+    CHAR Timestamp[TIMESTAMP_BUFFER_SIZE] = { 0 };
+    if( !LoggerTimestamp(Timestamp, sizeof(Timestamp)) )
+    {
+        return; // Failed to get timestamp
+    }
+
+    CHAR LogMessage[MAXIMUM_LOG_MESSAGE_SIZE] = { 0 };
+    INT64 MessageLength = _vsnprintf_s(
+        LogMessage,
+        sizeof(LogMessage),
+        _TRUNCATE,
+        Format,
+        Args
+    );
+
+    if (MessageLength < 0)
+    {
+        return; // Failed to format log message
+    }
+
+    EnterCriticalSection(&GlobalLoggerState.Lock);
+
+    if( !LoggerTryRotation() )
+    {
+        LeaveCriticalSection(&GlobalLoggerState.Lock);
+        return; // Rotation failed, do not log
+    }
+
+    if (GlobalLoggerState.FileStream == NULL)
+    {
+        LeaveCriticalSection(&GlobalLoggerState.Lock);
+        return; // No file stream available
+    }
+
+    INT64 WrittenBytes = fprintf(
+        GlobalLoggerState.FileStream,
+        "[%s] [%s] [%s:%llu] %s\n",
         Timestamp,
+        LOG_LEVEL_NAMES[Level],
         Filename,
         LineNumber,
-        gLoggerLevelNames[Level],
         LogMessage
     );
 
-    fflush(gLoggerFileStream); // Ensure the message is written immediately
-    gLoggerWrittenBytes += strlen(LogMessage) + TIMESTAMP_BUFFER_SIZE ; //size of log entry
-    
-    LeaveCriticalSection(&gLoggerLock);
+    if (WrittenBytes > 0)
+    {
+        fflush(GlobalLoggerState.FileStream); // Flush the stream to ensure the message is written
+    }
+
+    LeaveCriticalSection(&GlobalLoggerState.Lock);
 }
 
-__int64
+
+//////////////////////////////////////////
+//
+//          PUBLIC FUNCTIONS
+//
+//////////////////////////////////////////
+
+INT64
 LoggerInitConsole(
-    FILE* Filestream
+    _In_ FILE* Filestream
 )
 {
-    InitializeCriticalSection( &gLoggerLock );
 
-    if (Filestream == NULL)
+    if( GlobalLoggerState.IsInitialized )
     {
-        gLoggerFileStream = stdout; // default to stdout if no file stream provided
+        return -1; // Logger is already initialized
     }
-    else
-    {
-        gLoggerFileStream = Filestream;
-    }
+
+    InitializeCriticalSection( &GlobalLoggerState.Lock );
+
+    GlobalLoggerState.FileStream = Filestream;
+    GlobalLoggerState.Level = LOG_LEVEL_INFO; // Default log level
+    GlobalLoggerState.IsInitialized = TRUE;
+    GlobalLoggerState.MaxFileSize = 0; // No file size limit for console
+    
+    memset(GlobalLoggerState.BaseFilename, 0, sizeof(GlobalLoggerState.BaseFilename));
+    memset(GlobalLoggerState.CurrentFilename, 0, sizeof(GlobalLoggerState.CurrentFilename));
+    memset(&GlobalLoggerState.LastRotationTime, 0, sizeof(GlobalLoggerState.LastRotationTime));
 
     return 0;
 }
 
-__int64
+INT64
 LoggerInitFile(
-    const char* Path,
-    __int64 MaxFileSize
+    _In_ PCSTR Path,
+    _In_ INT64 RetentionDays
 )
 {
-    InitializeCriticalSection( &gLoggerLock );
+    if (Path == NULL || GlobalLoggerState.IsInitialized)
+    {
+        return -1; // Invalid path or logger already initialized
+    }
 
-    strncpy_s( 
-        gLoggerBaseFilename,
-        sizeof(gLoggerBaseFilename),
+    size_t PathLength = strnlen_s(Path, MAXIMUM_FILENAME_SIZE);
+    if( PathLength = 0 || PathLength >= MAXIMUM_FILENAME_SIZE )
+    {
+        return -1; // Path is too long
+    }
+
+    InitializeCriticalSection(&GlobalLoggerState.Lock);
+
+    strncpy_s(
+        GlobalLoggerState.BaseFilename,
+        sizeof(GlobalLoggerState.BaseFilename),
         Path,
         _TRUNCATE
     );
 
-    gLoggerMaxFileSize = MaxFileSize;
-
-    // open log file
-    if( fopen_s(&gLoggerFileStream, gLoggerBaseFilename, "a") != 0 )
+    PSTR Extension = strstr(GlobalLoggerState.BaseFilename, '.log');
+    if( Extension != NULL )
     {
-        return -1; // failed to open log file
+        *Extension = '\0'; // Remove .log extension if present
     }
-    
-    fseek(gLoggerFileStream, 0, SEEK_END);
-    gLoggerWrittenBytes = ftell(gLoggerFileStream); // get current size of the log file
 
-    return 0;
+    GlobalLoggerState.MaximumFileAgeDays = RetentionDays;
+    GlobalLoggerState.Level = LOG_LEVEL_INFO; // Default log level
+
+    SYSTEMTIME CurrentTime;
+    GetLocalTime(&CurrentTime);
+
+    if( !LoggerCreateFilename(&CurrentTime, GlobalLoggerState.CurrentFilename, sizeof(GlobalLoggerState.CurrentFilename)) )
+    {
+        DeleteCriticalSection(&GlobalLoggerState.Lock);
+        return -1; // Failed to create initial filename
+    }
+
+    errno_t ErrorOpen = fopen_s(&GlobalLoggerState.FileStream, GlobalLoggerState.CurrentFilename, "a");
+    if( ErrorOpen != 0 || GlobalLoggerState.FileStream == NULL )
+    {
+        DeleteCriticalSection(&GlobalLoggerState.Lock);
+        return -1; // Failed to open log file
+    }
+
+    GlobalLoggerState.LastRotationTime = CurrentTime; // Set last rotation time to current time
+    GlobalLoggerState.IsInitialized = TRUE;
+
+    LoggerCleanUpDatedFiles(); // Clean up old files
+
+    return 0; // Success
 }
 
-void
+VOID
 LoggerCleanUp(
-    void
+    VOID
 )
 {
-    EnterCriticalSection( &gLoggerLock );
 
-    if (gLoggerFileStream && gLoggerFileStream != stdout && gLoggerFileStream != stderr )
+    if( !GlobalLoggerState.IsInitialized )
     {
-        fclose(gLoggerFileStream);
+        return; // Logger is not initialized
+    }
+
+    EnterCriticalSection( &GlobalLoggerState.Lock );
+
+    if (GlobalLoggerState.FileStream != NULL && 
+        GlobalLoggerState.FileStream != stdout && 
+        GlobalLoggerState.FileStream != stderr )
+    {
+        fclose(GlobalLoggerState.FileStream);
     }   
 
-    gLoggerFileStream = NULL;
-    LeaveCriticalSection(&gLoggerLock);
-    DeleteCriticalSection(&gLoggerLock);
+    GlobalLoggerState.FileStream = NULL;
+    GlobalLoggerState.IsInitialized = FALSE;
+
+    LeaveCriticalSection(&GlobalLoggerState.Lock);
+    DeleteCriticalSection(&GlobalLoggerState.Lock);
+
+    memset(&GlobalLoggerState, 0, sizeof(GlobalLoggerState)); // Reset global logger state
 }
 
-void 
+VOID 
 LoggerSetLevel(
-    LOG_LEVEL Level
+    _In_ LOG_LEVEL Level
 )
 {
-    EnterCriticalSection(&gLoggerLock);
-    gLoggerLevel = Level;
-    LeaveCriticalSection(&gLoggerLock);
+    EnterCriticalSection(&GlobalLoggerState.Lock);
+    GlobalLoggerState.Level = Level;
+    LeaveCriticalSection(&GlobalLoggerState.Lock);
 }
 
 LOG_LEVEL
 LoggerGetLevel(
-    void
+    VOID
 )
 {
-    LOG_LEVEL Level;
+    if( !GlobalLoggerState.IsInitialized )
+    {
+        return LOG_LEVEL_NONE; // Logger is not initialized, return NONE level
+    }
+
     EnterCriticalSection(&GlobalLoggerState.Lock);
-    Level = GlobalLoggerState.Level;
+    LOG_LEVEL Level = GlobalLoggerState.Level;
     LeaveCriticalSection(&GlobalLoggerState.Lock);
+
     return Level;
 }
 
-void
+BOOL
+LoggerLevelEnabled(
+    _In_ LOG_LEVEL Level
+)
+{
+    if( !GlobalLoggerState.IsInitialized || Level < LOG_LEVEL_NONE || Level > LOG_LEVEL_FATAL )
+    {
+        return FALSE;
+    }
+
+    EnterCriticalSection(&GlobalLoggerState.Lock);
+    BOOL IsEnabled = (Level >= GlobalLoggerState.Level);
+    LeaveCriticalSection(&GlobalLoggerState.Lock);
+
+    return IsEnabled;
+}
+
+VOID
 LoggerWrite(
-    LOG_LEVEL Level,
-    const char* Filename,
-    __int64 LineNumber,
-    const char* Format,
+    _In_ LOG_LEVEL Level,
+    _In_ PCSTR Filename,
+    _In_ ULONG LineNumber,
+    _In_ PCSTR Format,
     ...
 )
 {
-    if (Level < GlobalLoggerState.Level)
+    if ( !GlobalLoggerState.IsInitialized || !LoggerLevelEnabled( Level ) )
     {
         return; // level is lower than the current logger level, so do not log
     }
 
     va_list Args;
     va_start(Args, Format);
-    Logger__WriteToFile(Level, Filename, LineNumber, Format, Args);
+    LoggerWriteToFile(Level, Filename, LineNumber, Format, Args);
     va_end(Args);
 }

@@ -24,9 +24,9 @@ typedef enum
 
 static
 __forceinline
-const char*
+PCSTR
 ShortFileName(
-    const char* Path
+    PCSTR Path
 )
 {
     if (Path == NULL || *Path == '\0')
@@ -34,7 +34,7 @@ ShortFileName(
         return "error";
     }
 
-    const char* p = strrchr(Path, '\\');
+    PCSTR p = strrchr(Path, '\\');
     if (p == NULL)
     {
         p = strrchr(Path, '/');
@@ -77,9 +77,9 @@ ShortFileName(
 /**
 *
 */
-int32_t
+INT64
 LoggerInitConsole(
-    FILE* Filestream
+    _In_ FILE* Filestream
 );
 
 
@@ -95,10 +95,10 @@ LoggerCleanUp(
 /**
 *
 */
-int32_t 
+INT64 
 LoggerInitFile(
-    const char* Path,
-    int64_t MaxFileSize
+    _In_ PCSTR Path,
+    _In_ INT64 RetentionDays
 );
 
 /**
@@ -106,7 +106,7 @@ LoggerInitFile(
 */
 VOID
 LoggerSetLevel(
-    LOG_LEVEL Level
+    _In_ LOG_LEVEL Level
 );
 
 
@@ -123,16 +123,16 @@ LoggerGetLevel(
 */
 BOOL
 LoggerLevelEnabled(
-    LOG_LEVEL Level
+    _In_ LOG_LEVEL Level
 );
 
 
 VOID
 LoggerWrite(
-    LOG_LEVEL Level,
-    PCSTR File,
-    ULONG Line,
-    PCSTR Format,
+    _In_ LOG_LEVEL Level,
+    _In_ PCSTR File,
+    _In_ ULONG Line,
+    _In_ PCSTR Format,
     ...
 );
 

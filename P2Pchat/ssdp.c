@@ -34,7 +34,7 @@ DiscoverUPnPDevice(
     memset(&MulticastAddress, 0, sizeof(MulticastAddress));
     MulticastAddress.sin_family = AF_INET;
     MulticastAddress.sin_port = htons(SSDP_PORT); // SSDP port 1900
-    MulticastAddress.sin_addr.s_addr = inet_addr(SSDP_MULTICAST); // multicast address 239.255.255.250
+    //MulticastAddress.sin_addr.s_addr = inet_addr(SSDP_MULTICAST); // multicast address 239.255.255.250
 
     if (sendto(
             SsdpSocket, 
@@ -81,7 +81,7 @@ DiscoverUPnPDevice(
 
         SsdpResponse[BytesReceived] = '\0'; // null terminate response
 
-        printf("Received SSDP response from %s:%d\n", inet_ntoa(LocalAddress.sin_addr), ntohs(LocalAddress.sin_port));
+        //printf("Received SSDP response from %s:%d\n", inet_ntoa(LocalAddress.sin_addr), ntohs(LocalAddress.sin_port));
 
         // Check if the response contains a location URL
         LocationUrl = XmlGetLocationUrl(SsdpResponse);
@@ -104,7 +104,7 @@ DiscoverUPnPDevice(
         }
     }
 
-    strchr();
+   /* strchr();*/
 
     closesocket(SsdpSocket);
     return FALSE;
@@ -113,32 +113,51 @@ DiscoverUPnPDevice(
 BOOL
 GetDeviceDescription(
     _In_  PUPNP_DEVICE pDevice
-);
+)
+{
+    return TRUE;
+}
 
 
-BOOL GetPublicIpAddress(
+BOOL 
+GetPublicIpAddress(
     _In_  PUPNP_DEVICE pDevice,
     _Out_ PSTR PublicIpBuffer,
     _In_  INT BufferSize
-);
+)
+{
+    return TRUE;
+}
 
 
 // XML parsing   
 
-PSTR XmlGetValue(
+PSTR 
+XmlGetValue(
     _In_ PCSTR Xml,
     _In_ PCSTR RootTag,
     _In_ PCSTR EndTag
-);
+)
+{
+    return NULL;
+}
 
 
-PSTR XmlGetLocationUrl(
+PSTR 
+XmlGetLocationUrl(
     _In_ PCSTR Xml
-);
+)
+{
+    return NULL;
+}
 
-BOOL ParseUrl(
+BOOL 
+ParseUrl(
     _In_ PCSTR Url,
     _Out_ PSTR Host,
     _Out_ PSTR Path,
     _Out_ PINT16 Port
-);
+)
+{
+    return FALSE;
+}
