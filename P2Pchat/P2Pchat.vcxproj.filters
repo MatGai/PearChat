@@ -8,6 +8,15 @@
     <Filter Include="net">
       <UniqueIdentifier>{2fe642ef-d636-4c38-9afa-61a57fa7d0ed}</UniqueIdentifier>
     </Filter>
+    <Filter Include="ssdp">
+      <UniqueIdentifier>{db154617-f779-4fe3-8c19-dde1ab2978bd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="util">
+      <UniqueIdentifier>{ded5b9c3-e9b8-4df1-b46b-76c413dcdd86}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="util\logger">
+      <UniqueIdentifier>{8fdabf37-a17a-4c1b-8c61-7ecd5717d3c0}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="entry.c">
@@ -16,10 +25,22 @@
     <ClCompile Include="winnet.c">
       <Filter>net</Filter>
     </ClCompile>
+    <ClCompile Include="ssdp.c">
+      <Filter>ssdp</Filter>
+    </ClCompile>
+    <ClCompile Include="logger.c">
+      <Filter>util\logger</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="winnet.h">
       <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="ssdp.h">
+      <Filter>ssdp</Filter>
+    </ClInclude>
+    <ClInclude Include="logger.h">
+      <Filter>util\logger</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
