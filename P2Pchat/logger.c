@@ -21,19 +21,18 @@
 
 #define DEFAULT_FILE_AGE 14                // Default maximum age of log files to be kept in days
 
+#define DEFAULT_LOG_FILE_EXETENSION ".txt" 
+
 typedef struct _LOGGER_STATE
 {
     CRITICAL_SECTION Lock;                                   // Critical section for thread safety
     FILE*            FileStream;                             // File stream for logging
-    INT64            MaxFileSize;                            // Maximum file size before rotation
-    CHAR             BaseFilename[MAXIMUM_FILENAME_SIZE];    // Base filename for log files
+    CHAR             BaseFilePath[MAXIMUM_FILENAME_SIZE];    // Base filename for log files
     CHAR             CurrentFilename[MAXIMUM_FILENAME_SIZE]; // Current log file name
-    INT64            WrittenBytes;                           // Total bytes written to log file
     LOG_LEVEL        Level;                                  // Current log level
     BOOL             IsInitialized;                          // Flag to check if logger is initialized
     SYSTEMTIME       LastRotationTime;                       // Last time the log file was rotated
-    ULONG            MaximumFileAgeDays;                     // Maximum age of log files in days
-
+    INT64            MaximumFileAgeDays;                     // Maximum age of log files in days
 } LOGGER_STATE, * PLOGGER_STATE;
 
 static LOGGER_STATE GlobalLoggerState = { 0 };
@@ -58,7 +57,12 @@ PCSTR LOG_LEVEL_NAMES[] = {
 //////////////////////////////////////////
 
 /**
-* Internal helper for getting current time.
+* Internal helper for getting current time in format YYYY-MM-DD HH:MM:SS.mmm.
+* 
+* @param Buffer     Pointer to a buffer where the timestamp will be stored.]
+* @param BufferSize Size of the buffer.
+* 
+* @return TRUE if the timestamp was created successfully, FALSE otherwise.
 */
 static 
 BOOL 
@@ -93,7 +97,13 @@ LoggerTimestamp(
 }
 
 /**
-* Converts SYSTEMTIME to a string in the format YYYY-MM-DD.
+* Converts SYSTEMTIME to a string in the format YYYY-MM-DD to given buffer.
+* 
+* @param SystemTime     Pointer to SYSTEMTIME structure containing the date.
+* @param DateString     Pointer to a buffer where the date string will be stored.
+* @param DateStringSize Size of the DateString buffer.
+* 
+* @return TRUE if the date string was created successfully, FALSE otherwise.
 */
 static
 BOOL
@@ -121,12 +131,20 @@ LoggerDateString(
 }
 
 /**
-* Creates a file, with the name based on the current date.
+* Creates a file, with the name based on the current date and base file path.
+* 
+* @param SystemTime Pointer to SYSTEMTIME structure containing the current date and time.
+* @param Filename   Pointer to a buffer where the filename will be stored.
+* @param FilenameSize Size of the Filename buffer.
+* 
+* @return TRUE if the filename was created successfully, FALSE otherwise.
 */
+static 
+BOOL
 LoggerCreateFilename(
-    const SYSTEMTIME* SystemTime,
-    PSTR Filename,
-    ULONG FilenameSize
+    _In_  const SYSTEMTIME* SystemTime,
+    _Out_ PSTR Filename,
+    _Out_ ULONG FilenameSize
 )
 {
     if (SystemTime == NULL || Filename == NULL || FilenameSize < MAXIMUM_FILENAME_SIZE)
@@ -144,8 +162,8 @@ LoggerCreateFilename(
         Filename,
         FilenameSize,
         _TRUNCATE,
-        "%s_%s.txt",
-        GlobalLoggerState.BaseFilename,
+        "%s\\%s"DEFAULT_LOG_FILE_EXETENSION"",
+        GlobalLoggerState.BaseFilePath,
         DateString
     );
 
@@ -153,7 +171,12 @@ LoggerCreateFilename(
 }
 
 /**
-*
+* Compares two SYSTEMTIME dates.
+* 
+* @param Date1 First date to compare.
+* @param Date2 Second date to compare.
+* 
+* @return TRUE if the dates are equal, FALSE otherwise.
 */
 static
 BOOL 
@@ -173,16 +196,19 @@ LoggerCompareDate(
 }
 
 /**
-*
+* Calculates the difference in days between the given date and the current date.
+* 
+* @param Date Pointer to SYSTEMTIME structure containing the date to adjust.
+* @param Days Number of days to subtract from the date.
 */
 static 
 void
 LoggerDifferenceInDays(
-    const SYSTEMTIME* Date,
-    INT32  Days
+    SYSTEMTIME* Date,
+    INT64       Days
 )
 {
-    if (Date == NULL || Days == NULL)
+    if (Date == NULL)
     {
         return;
     }
@@ -204,7 +230,7 @@ LoggerDifferenceInDays(
 }
 
 /**
-*
+* Cleans up old log files based on the maximum file age set in the logger state.
 */
 static
 VOID
@@ -223,17 +249,18 @@ LoggerCleanUpDatedFiles(
 
     CHAR Filename[MAXIMUM_FILENAME_SIZE] = { 0 };
 
-    WIN32_FIND_DATAA FindData;
-    HANDLE FindHandle = FindFirstFileA(GlobalLoggerState.BaseFilename, &FindData);
 
     CHAR SearchPattern[MAXIMUM_FILENAME_SIZE] = { 0 };
     _snprintf_s(
         SearchPattern, 
         sizeof(SearchPattern), 
         _TRUNCATE,
-        "%s_*.log", 
-        GlobalLoggerState.BaseFilename
+        "%s\\*.txt", 
+        GlobalLoggerState.BaseFilePath
     );
+
+    WIN32_FIND_DATAA FindData;
+    HANDLE FindHandle = FindFirstFileA(SearchPattern, &FindData);
 
     if (FindHandle == INVALID_HANDLE_VALUE)
     {
@@ -244,16 +271,14 @@ LoggerCleanUpDatedFiles(
 
     while( FileFound )
     {
-        PSTR DateStart = strstr(FindData.cFileName, "_"); // Find the date part in the filename
+        PSTR DateStart = FindData.cFileName; 
 
         if (DateStart == NULL)
         {
             continue; // Invalid filename format
         }
 
-        DateStart++; // Move past underscore
-
-        PSTR DateEnd = strstr(DateStart, ".log"); // Find the end of the date part
+        PSTR DateEnd = strstr(DateStart, ".txt"); // Find the end of the date part
 
         if (DateEnd == NULL || ( DateEnd - DateStart ) != 10 )
         {
@@ -271,7 +296,7 @@ LoggerCleanUpDatedFiles(
         SYSTEMTIME FindDataTime = { 0 };
         if( sscanf_s(
             DateString,
-            "%4d-%2d-%2d",
+            "%4hu-%2hu-%2hu",
             &FindDataTime.wYear,
             &FindDataTime.wMonth,
             &FindDataTime.wDay
@@ -288,57 +313,61 @@ LoggerCleanUpDatedFiles(
 
         if (CompareFileTime(&FileTime, &CutoffTime) < 0)
         {
-
+            // Create full path to the file to delete
             CHAR FullPath[MAXIMUM_FILENAME_SIZE] = { 0 };
+            _snprintf_s(
+                FullPath,
+                sizeof(FullPath),
+                _TRUNCATE,
+                "%s\\%s",
+                GlobalLoggerState.BaseFilePath,
+                FindData.cFileName
+            );
 
-            PSTR LastSlash = strrchr(GlobalLoggerState.BaseFilename, '\\');
-            if (LastSlash == NULL)
-            {
-                LastSlash = strrchr(GlobalLoggerState.BaseFilename, '/');
-            }
-
-            if (LastSlash != NULL)
-            {
-                strncpy_s(FullPath, sizeof(FullPath), GlobalLoggerState.BaseFilename, LastSlash - GlobalLoggerState.BaseFilename + 1);
-                strncat_s(FullPath, sizeof(FullPath), FindData.cFileName, _TRUNCATE); // Append filename to path
-            }
-            else
-            {
-                strncpy_s(FullPath, sizeof(FullPath), FindData.cFileName, _TRUNCATE); // Just filename
-            }
-
-            DeleteFileA(FullPath); // Delete the file
+            DeleteFileA(FullPath);
         }
 
         FileFound = FindNextFileA(FindHandle, &FindData); // Get next file
     } 
 
     FindClose(FindHandle);
-
 }
 
 /**
-*
+* Checks if the log file rotation is needed based on the current date and last rotation time.
+* 
+* @param CurrentTime Pointer to SYSTEMTIME structure containing the current date and time.
+* 
+* @return TRUE if rotation is needed, FALSE otherwise.
 */
 static 
 BOOL
 LoggerIsRotationNeeded(
-    LPSYSTEMTIME CurrentTime
+    PSYSTEMTIME CurrentTime
 )
 {
+    SYSTEMTIME LocalTime = { 0 };
+
     if (CurrentTime == NULL)
     {
-        GetLocalTime( CurrentTime );
+        CurrentTime = &LocalTime;
     }
+
+    GetLocalTime(CurrentTime);
 
     return LoggerCompareDate(
         CurrentTime,
         &GlobalLoggerState.LastRotationTime
-    ) == FALSE; // If current date is different from last rotation date, rotation is needed
+    ) == FALSE; // If current date is different from last rotation date, rotation is needed.
 }
 
 /**
-*
+* Creates a new log file name based on the current date.
+* 
+* @param NewFilename     Pointer to a buffer where the new filename will be stored.
+* @param NewFilenameSize Size of the NewFilename buffer.
+* 
+* @return TRUE if the new filename was created successfully, FALSE otherwise.
 */
 static
 BOOL
@@ -366,12 +395,12 @@ LoggerCreateRotateFile(
         }
     }
 
-    int Result = _snprintf_s(
+    INT Result = _snprintf_s(
         NewFilename,
         NewFilenameSize,
         _TRUNCATE,
-        "%s_%s.log",
-        GlobalLoggerState.BaseFilename,
+        "%s\\%s"DEFAULT_LOG_FILE_EXETENSION"",
+        GlobalLoggerState.BaseFilePath,
         TimestampBuffer
     );
 
@@ -379,7 +408,9 @@ LoggerCreateRotateFile(
 }
 
 /**
-*
+* Attempts to rotate the log file if needed.
+* 
+* @return TRUE if rotation was successful, FALSE otherwise.
 */
 static 
 BOOL
@@ -402,7 +433,7 @@ LoggerTryRotation(
     }
 
     CHAR NewFilename[MAXIMUM_FILENAME_SIZE] = { 0 };
-    if( !LoggerCreateRotateFile(NewFilename, sizeof(NewFilename)) )
+    if( !LoggerCreateRotateFile( NewFilename, sizeof(NewFilename)) )
     {
         return FALSE; // Failed to create new filename
     }
@@ -428,14 +459,22 @@ LoggerTryRotation(
 }
 
 /**
-*
+* Writes a log message to the file stream with the specified log level, filename, line number, and format string.
+* 
+* @param Level      The log level of the message.
+* @param Filename   The name of the file where the log message is being written.
+* @param LineNumber The line number in the file where the log message is being written.
+* @param Format     The format string for the log message.
+* @param Args       The variable argument list containing the values to format into the log message.
+* 
+* @return VOID
 */
 static
 VOID
 LoggerWriteToFile(
     _In_ LOG_LEVEL Level,
     _In_ PCSTR Filename,
-    _In_ ULONG LineNumber,
+    _In_ UINT64 LineNumber,
     _In_ PCSTR Format,
     _In_ va_list Args
 )
@@ -472,7 +511,11 @@ LoggerWriteToFile(
 
     EnterCriticalSection(&GlobalLoggerState.Lock);
 
-    if( !LoggerTryRotation() )
+    SYSTEMTIME CurrentTime;
+    GetLocalTime(&CurrentTime);
+    BOOL IsRotationNeeded = LoggerIsRotationNeeded(&CurrentTime);
+
+    if( IsRotationNeeded && !LoggerTryRotation() )
     {
         LeaveCriticalSection(&GlobalLoggerState.Lock);
         return; // Rotation failed, do not log
@@ -525,9 +568,8 @@ LoggerInitConsole(
     GlobalLoggerState.FileStream = Filestream;
     GlobalLoggerState.Level = LOG_LEVEL_INFO; // Default log level
     GlobalLoggerState.IsInitialized = TRUE;
-    GlobalLoggerState.MaxFileSize = 0; // No file size limit for console
     
-    memset(GlobalLoggerState.BaseFilename, 0, sizeof(GlobalLoggerState.BaseFilename));
+    memset(GlobalLoggerState.BaseFilePath, 0, sizeof(GlobalLoggerState.BaseFilePath));
     memset(GlobalLoggerState.CurrentFilename, 0, sizeof(GlobalLoggerState.CurrentFilename));
     memset(&GlobalLoggerState.LastRotationTime, 0, sizeof(GlobalLoggerState.LastRotationTime));
 
@@ -546,7 +588,7 @@ LoggerInitFile(
     }
 
     size_t PathLength = strnlen_s(Path, MAXIMUM_FILENAME_SIZE);
-    if( PathLength = 0 || PathLength >= MAXIMUM_FILENAME_SIZE )
+    if( PathLength == 0 || PathLength >= MAXIMUM_FILENAME_SIZE )
     {
         return -1; // Path is too long
     }
@@ -554,16 +596,22 @@ LoggerInitFile(
     InitializeCriticalSection(&GlobalLoggerState.Lock);
 
     strncpy_s(
-        GlobalLoggerState.BaseFilename,
-        sizeof(GlobalLoggerState.BaseFilename),
+        GlobalLoggerState.BaseFilePath,
+        sizeof(GlobalLoggerState.BaseFilePath),
         Path,
         _TRUNCATE
     );
 
-    PSTR Extension = strstr(GlobalLoggerState.BaseFilename, '.log');
+    PSTR Extension = strstr(GlobalLoggerState.BaseFilePath, DEFAULT_LOG_FILE_EXETENSION);
     if( Extension != NULL )
     {
-        *Extension = '\0'; // Remove .log extension if present
+        *Extension = '\0'; // Remove .txt extension if present
+    }
+
+    Extension = strstr(GlobalLoggerState.BaseFilePath, ".exe");
+    if( Extension != NULL )
+    {
+        *Extension = '\0'; // Remove .exe extension if present
     }
 
     GlobalLoggerState.MaximumFileAgeDays = RetentionDays;

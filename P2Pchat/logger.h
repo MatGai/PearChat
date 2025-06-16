@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -46,36 +47,40 @@ ShortFileName(
 
 #define LOG_TRACE( fmt, ... )                                                         \
     do {                                                                              \
-        LoggerWrite( LOG_LEVEL_TRACE, FILENAME, __LINE__, fmt, ##__VA_ARGS__ )        \
-    }  while (0)
+        LoggerWrite( LOG_LEVEL_TRACE, FILENAME, __LINE__, fmt, ##__VA_ARGS__ );       \
+    }  while (0);
 
 #define LOG_DEBUG( fmt, ... )                                                         \
     do {                                                                              \
-        LoggerWrite( LOG_LEVEL_DEBUG, FILENAME, __LINE__, fmt, ##__VA_ARGS__ )        \
+        LoggerWrite( LOG_LEVEL_DEBUG, FILENAME, __LINE__, fmt, ##__VA_ARGS__ );       \
     } while (0)
 
 #define LOG_INFO(  fmt, ... )                                                         \
     do {                                                                              \
-        LoggerWrite( LOG_LEVEL_INFO, FILENAME, __LINE__, fmt, ##__VA_ARGS__ )         \
-    } while (0)
+        LoggerWrite( LOG_LEVEL_INFO, FILENAME, __LINE__, fmt, ##__VA_ARGS__ );        \
+    } while (0);
 
 #define LOG_WARN(  fmt, ... )                                                         \
     do {                                                                              \
-        LoggerWrite( LOG_LEVEL_WARN, FILENAME, __LINE__, fmt, ##__VA_ARGS__ )         \
+        LoggerWrite( LOG_LEVEL_WARN, FILENAME, __LINE__, fmt, ##__VA_ARGS__ );        \
     } while (0)
 
 #define LOG_ERROR( fmt, ... )                                                         \
     do {                                                                              \
-        LoggerWrite( LOG_LEVEL_ERROR, FILENAME, __LINE__, fmt, ##__VA_ARGS__ )        \
+        LoggerWrite( LOG_LEVEL_ERROR, FILENAME, __LINE__, fmt, ##__VA_ARGS__ );       \
     } while (0)
 
 #define LOG_FATAL( fmt, ... )                                                         \
     do {                                                                              \
-        LoggerWrite( LOG_LEVEL_DEBUG, FILENAME, __LINE__, fmt, ##__VA_ARGS__ )        \
+        LoggerWrite( LOG_LEVEL_FATAL, FILENAME, __LINE__, fmt, ##__VA_ARGS__ );       \
     } while (0)
 
 /**
-*
+* Intialises logger using a stream to console.
+* 
+* @param Filestream 
+* 
+* @return 
 */
 INT64
 LoggerInitConsole(
@@ -84,16 +89,20 @@ LoggerInitConsole(
 
 
 /**
-*
+* 
 */
 VOID 
 LoggerCleanUp(
     VOID
 );
 
-
 /**
-*
+* Intialises logger using a stream to given path.
+* 
+* @param Path
+* @param RetentionDays
+* 
+* @return 
 */
 INT64 
 LoggerInitFile(
@@ -102,7 +111,9 @@ LoggerInitFile(
 );
 
 /**
-*
+* Sets the log level for the logger.
+* 
+* @param Level The log level to set (e.g., LOG_LEVEL_INFO, LOG_LEVEL_ERROR).
 */
 VOID
 LoggerSetLevel(
@@ -111,7 +122,9 @@ LoggerSetLevel(
 
 
 /**
-*
+* Retrieves the current log level.
+* 
+* @return The current log level (e.g., LOG_LEVEL_INFO, LOG_LEVEL_ERROR).
 */
 LOG_LEVEL 
 LoggerGetLevel(
@@ -119,14 +132,26 @@ LoggerGetLevel(
 );
 
 /**
-*
+* Checks if a specific log level is enabled.
+* 
+* @param Level The log level to check (e.g., LOG_LEVEL_INFO, LOG_LEVEL_ERROR).
+* 
+* @return TRUE if the specified log level is enabled, FALSE otherwise.
 */
 BOOL
 LoggerLevelEnabled(
     _In_ LOG_LEVEL Level
 );
 
-
+/**
+* Writes a log message to the console or file.
+* 
+* @param Level  The log level (e.g., LOG_LEVEL_INFO, LOG_LEVEL_ERROR).
+* @param File   The source file where the log is generated.
+* @param Line   The line number in the source file.
+* @param Format The format string for the log message.
+* @param ...    Variable arguments for the format string.
+*/
 VOID
 LoggerWrite(
     _In_ LOG_LEVEL Level,

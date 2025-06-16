@@ -4,6 +4,7 @@
 
 
 #include "winnet.h"
+#include "logger.h"
 
 
 #define DEFAULT_PORT "5050"
@@ -40,11 +41,85 @@ CleanUpConnection(
     SOCKET Socket
 );
 
+static void EnsureDirectoryExists(LPCSTR dirPath)
+{
+    DWORD attrib = GetFileAttributesA(dirPath);
+    if (attrib == INVALID_FILE_ATTRIBUTES || !(attrib & FILE_ATTRIBUTE_DIRECTORY)) 
+    {
+        // either it doesn't exist, or it's not a directory
+        CreateDirectoryA(dirPath, NULL);
+    }
+}
+
+bool RemoveFileNameFromPath(char* path, size_t bufSize) {
+    char* lastSlash = NULL;
+    // search for both separators
+    char* p1 = strrchr(path, '\\');
+    char* p2 = strrchr(path, '/');
+    if (p1 || p2) {
+        lastSlash = (p1 > p2 ? p1 : p2);
+        *lastSlash = '\0';
+        return true;
+    }
+    // no separator found — maybe it was just a filename; make it empty
+    if (bufSize > 0) {
+        path[0] = '\0';
+    }
+    return false;
+}
+
+// Combines dir + filename (or subfolder) into outBuf.
+// Ensures exactly one slash between them and never overruns.
+bool CombinePaths(const char* dir, const char* file, char* outBuf, size_t bufSize) {
+    size_t dirLen = strlen(dir);
+    bool hasSlash = (dirLen > 0) &&
+        (dir[dirLen - 1] == '\\' || dir[dirLen - 1] == '/');
+
+    int needed = snprintf(
+        outBuf, bufSize,
+        "%s%s%s",
+        dir,
+        hasSlash ? "" : "\\",
+        file
+    );
+
+    // snprintf returns number of chars (not including '\0') it would have written
+    return (needed >= 0 && (size_t)needed < bufSize);
+}
 
 INT main(
     VOID
 )
 {
+    CHAR ModulePath[MAX_PATH] = { 0 };
+    DWORD Size = GetModuleFileNameA(NULL, ModulePath, MAX_PATH);
+
+    if (Size == 0 || Size == MAX_PATH)
+    {
+        printf("Failed to get module path\n");
+        return 1;
+    }
+
+    RemoveFileNameFromPath(ModulePath, sizeof(ModulePath) );
+
+    CHAR LogPath[MAX_PATH] = { 0 };
+    if( !CombinePaths(ModulePath, "logs", LogPath, sizeof(LogPath)) )
+    {
+        printf("Failed to combine paths for log directory\n");
+        return 1;
+    }
+
+    EnsureDirectoryExists(LogPath);
+
+    LoggerInitFile( LogPath, 14 );
+
+#ifdef _DEBUG
+    LoggerSetLevel(LOG_LEVEL_DEBUG);
+#else 
+    LoggerSetLevel(LOG_LEVEL_INFO);
+#endif
+
+
     PCSTR ServerIp   = DEFAULT_IP;
     PCSTR ServerPort = DEFAULT_PORT;
 
