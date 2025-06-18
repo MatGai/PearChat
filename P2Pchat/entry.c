@@ -5,7 +5,7 @@
 
 #include "winnet.h"
 #include "logger.h"
-
+#include "ssdp.h"
 
 #define DEFAULT_PORT "5050"
 #define DEFAULT_IP "162.55.179.66"
@@ -119,16 +119,45 @@ INT main(
     LoggerSetLevel(LOG_LEVEL_INFO);
 #endif
 
-
-    PCSTR ServerIp   = DEFAULT_IP;
-    PCSTR ServerPort = DEFAULT_PORT;
-
     // Initialise Winsock dll
-    if( !InitWinSock() )
+    if (!InitWinSock())
     {
         printf("Failed to initalise winsock\n");
         return 1;
     }
+
+    UPNP_DEVICE Device = { 0 };
+    CHAR PublicIp[64] = { 0 };
+
+    if( !DiscoverUPnPDevice( &Device ) )
+    {
+        printf("Failed to discover UPnP device\n");
+        CleanUpWinSock();
+        return 1;
+    }
+
+    printf("Discovered UPnP device: %s:%d\n", Device.Host, Device.Port);
+
+    if( !GetDeviceDescription( &Device ) )
+    {
+        printf("Failed to get device description\n");
+        CleanUpWinSock();
+        return 1;
+    }
+
+    printf("Control URL: %s\n", Device.ControlUrl );
+
+    if( !GetPublicIpAddress( &Device, PublicIp, sizeof(PublicIp) ) )
+    {
+        printf("Failed to get public IP address\n");
+        CleanUpWinSock();
+        return 1;
+    }
+
+    printf("Public IP Address: %s\n", PublicIp);
+
+    PCSTR ServerIp   = DEFAULT_IP;
+    PCSTR ServerPort = DEFAULT_PORT;
 
     SOCKET ConnectServer = NULL;
     if( !ConnectToServer( ServerIp, ServerPort, &ConnectServer ) )

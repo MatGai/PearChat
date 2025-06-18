@@ -9,14 +9,18 @@ PCSTR SSDP_MSEARCH =
 "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n"
 "MX: 3\r\n\r\n";
 
-static
-PCSTR SOAP_REQUEST_TEMPLATE =
+static 
+PCSTR 
+SOAP_HEADER_TEMPLATE = 
 "POST %s HTTP/1.1\r\n"
 "HOST: %s:%d\r\n"
 "CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"
 "CONTENT-LENGTH: %d\r\n"
 "SOAPACTION: \"urn:schemas-upnp-org:service:WANIPConnection:1#GetExternalIPAddress\"\r\n"
-"\r\n"
+"\r\n";
+
+static
+PCSTR SOAP_CONTENT_TEMPLATE =
 "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n"
 "<s:Envelope s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\" xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n"
 "<s:Body>\r\n"
@@ -30,7 +34,7 @@ DiscoverUPnPDevice(
     _Out_ PUPNP_DEVICE pDevice
 )
 {
-    SOCKET SsdpSocket = INVALID_SOCKET;
+    SOCKET SsdpSocket;
     struct sockaddr_in  MulticastAddress;
     struct sockaddr_in  LocalAddress;
     INT64 LocalAddressSize = sizeof(LocalAddress);
@@ -219,7 +223,8 @@ GetDeviceDescription(
         INT64 UrlLen = UrlEnd - UrlStart;
         if( UrlLen < sizeof( pDevice->ControlUrl ))
         {
-            strncpy(pDevice->ControlUrl, UrlStart, UrlLen);
+            //strncpy_s(pDevice->ControlUrl, sizeof( pDevice->ControlUrl ), UrlStart, UrlLen);
+            strncpy_s(pDevice->ControlUrl, SSDP_MAX_URL_SIZE, UrlStart, UrlLen);
             pDevice->ControlUrl[UrlLen] = '\0';
         }
 
@@ -237,6 +242,82 @@ GetPublicIpAddress(
     _In_  INT64 BufferSize
 )
 {
+
+    SOCKET HttpSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if( HttpSocket == INVALID_SOCKET) 
+    {
+        LOG_DEBUG("Failed to create HTTP socket: %d\n", WSAGetLastError());
+        return FALSE;
+    }
+
+    struct sockaddr_in ServerAddress;
+    memset(&ServerAddress, 0, sizeof(ServerAddress));
+    ServerAddress.sin_family = AF_INET;
+    ServerAddress.sin_port = htons(pDevice->Port);
+    inet_pton(AF_INET, pDevice->Host, &ServerAddress.sin_addr);
+
+    if ( connect(HttpSocket, (struct sockaddr*)&ServerAddress, sizeof(ServerAddress)) == SOCKET_ERROR)
+    {
+        LOG_DEBUG("Failed to connect to device %d\n", WSAGetLastError());
+        closesocket(HttpSocket);
+        return FALSE;
+    }
+
+    CHAR Request[2048];
+    snprintf(
+        Request,
+        sizeof(Request),
+        "POST %s HTTP/1.1\r\n"
+        "HOST: %s:%d\r\n"
+        "CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"
+        "CONTENT-LENGTH: %d\r\n"
+        "SOAPACTION: \"urn:schemas-upnp-org:service:WANIPConnection:1#GetExternalIPAddress\"\r\n"
+        "\r\n"
+        "%s",
+        pDevice->ControlUrl, pDevice->Host, pDevice->Port,
+        (INT)strlen(SOAP_CONTENT_TEMPLATE),
+        SOAP_CONTENT_TEMPLATE
+    );
+
+    INT BytesSent = send(HttpSocket, Request, (INT)strlen(Request), 0);
+    if (BytesSent == SOCKET_ERROR)
+    {
+        LOG_DEBUG("Failed to send HTTP request: %d\n", WSAGetLastError());
+        closesocket(HttpSocket);
+        return FALSE;
+    }
+
+    CHAR Response[SSDP_MAX_RESPONSE_SIZE];
+    INT BytesReceived = recv(HttpSocket, Response, sizeof(Response) - 1, 0);
+    if (BytesReceived == SOCKET_ERROR)
+    {
+        LOG_DEBUG("Failed to receive HTTP response: %d\n", WSAGetLastError());
+        closesocket(HttpSocket);
+        return FALSE;
+    }
+
+    Response[BytesReceived] = '\0';
+    closesocket(HttpSocket);
+
+    PSTR IpAddress = XmlGetValue(
+        Response,
+        "<NewExternalIPAddress>",
+        "</NewExternalIPAddress>"
+    );
+
+    if (IpAddress == NULL)
+    {
+        LOG_DEBUG("Failed to parse public IP address from response.\n");
+        return FALSE;
+    }
+
+    //strncpy_s(PublicIpBuffer, IpAddress, BufferSize - 1);
+    strncpy_s(PublicIpBuffer, BufferSize, IpAddress, _TRUNCATE);
+    PublicIpBuffer[BufferSize - 1] = '\0'; // ensure null termination
+    free(IpAddress);
+
+    LOG_INFO("Public IP Address: %s\n", PublicIpBuffer);
+
     return TRUE;
 }
 
@@ -271,7 +352,8 @@ XmlGetValue(
         return NULL;
     }
 
-    strncpy( Value, Start, Length );
+    //strncpy( Value, Start, Length );
+    strncpy_s(Value, Length + 1, Start, Length); // ensure null termination
     Value[Length] = '\0';
     return Value;
 }
@@ -282,7 +364,46 @@ XmlGetLocationUrl(
     _In_ PCSTR Xml
 )
 {
-    return NULL;
+    PSTR Start = strstr(Xml, "LOCATION:");\
+    if( Start == NULL )
+    {
+        Start = strstr(Xml, "Location:"); // case insensitive
+        if (Start == NULL)
+        {
+            return NULL;
+        }
+        return NULL;
+    }
+
+    PSTR UrlStart = strstr(Start, ":");
+    if( UrlStart == NULL)
+    {
+        return NULL;
+    }
+    UrlStart++; // move past the colon
+
+    while( *UrlStart == ' ' || *UrlStart == '\t') // skip whitespace
+    {
+        UrlStart++;
+    }
+
+    PSTR UrlEnd = UrlStart;
+    while( *UrlEnd != '\r' && *UrlEnd != '\n' && *UrlEnd) // find end of URL
+    {
+        UrlEnd++;
+    }
+
+    INT64 UrlLength = UrlEnd - UrlStart;
+    PSTR Url = malloc(UrlLength + 1);
+    if( Url == NULL )
+    {
+        return NULL;
+    }
+
+    //strncpy(Url, UrlStart, UrlLength);
+    strncpy_s(Url, UrlLength + 1, UrlStart, UrlLength); // ensure null termination
+    Url[UrlLength] = '\0'; // null terminate the URL
+    return Url;
 }
 
 BOOL 
@@ -293,5 +414,40 @@ ParseUrl(
     _Out_ PINT16 Port
 )
 {
-    return FALSE;
+    if( strncmp( Url, "http://", 7) != 0 )
+    {
+        LOG_DEBUG("URL does not start with http://\n");
+        return FALSE;
+    }
+
+    PSTR HostStart = (PSTR)(Url + 7); // skip "http://"
+    PSTR PortStart = strchr(HostStart, ':');
+    PSTR PathStart = strchr(HostStart, '/');
+
+    if (PortStart == NULL && PathStart == NULL)
+    {
+        LOG_DEBUG("Invalid URL format, no port or path found.\n");
+        return FALSE;
+    }
+
+    INT64 HostLength = 0;
+    if( PortStart != NULL && PortStart < PathStart )
+    {
+        HostLength = PortStart - HostStart;
+        *Port = (INT16)atoi(PortStart + 1); // Port is after the colon
+    }
+    else
+    {
+        HostLength = PathStart - HostStart;
+        *Port = 80; // default HTTP port
+    }
+
+    //strncpy(Host, HostStart, HostLength);
+    strncpy_s(Host, HostLength, HostStart, HostLength); // ensure null termination
+    Host[HostLength] = '\0'; // null terminate the host string
+
+    //strcpy(Path, PathStart);
+    strcpy_s(Path, SSDP_MAX_URL_SIZE, PathStart); // copy path or set to root
+
+    return TRUE;
 }
