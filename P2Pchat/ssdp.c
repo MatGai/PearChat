@@ -4,14 +4,14 @@
 static
 PCSTR SSDP_MSEARCH =
 "M-SEARCH * HTTP/1.1\r\n"
-"HOST: " SSDP_MULTICAST ":" "1900" "r\n"
+"HOST: 239.255.255.250:1900\r\n"
 "MAN: \"ssdp:discover\"\r\n"
 "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n"
 "MX: 3\r\n\r\n";
 
-static 
-PCSTR 
-SOAP_HEADER_TEMPLATE = 
+static
+PCSTR
+SOAP_HEADER_TEMPLATE =
 "POST %s HTTP/1.1\r\n"
 "HOST: %s:%d\r\n"
 "CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"
@@ -35,14 +35,11 @@ DiscoverUPnPDevice(
 )
 {
     SOCKET SsdpSocket;
-    struct sockaddr_in  MulticastAddress;
-    struct sockaddr_in  LocalAddress;
-    INT64 LocalAddressSize = sizeof(LocalAddress);
-    CHAR SsdpResponse[SSDP_MAX_RESPONSE_SIZE];
+    struct sockaddr_in MulticastAddress;
     INT64 BytesReceived = 0;
     PSTR LocationUrl = NULL;
 
-    // create a UDP socket for SSDP discovery
+    // Create a UDP socket for SSDP discovery
     SsdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (SsdpSocket == INVALID_SOCKET)
     {
@@ -50,7 +47,17 @@ DiscoverUPnPDevice(
         return FALSE;
     }
 
-    DWORD Timeout = SSDP_TIMEOUT; // 5 second timeout for receiving responses
+    // Set socket to allow reuse of address
+    BOOL ReuseAddr = TRUE;
+    if (setsockopt(SsdpSocket, SOL_SOCKET, SO_REUSEADDR, (PCSTR)&ReuseAddr, sizeof(ReuseAddr)) == SOCKET_ERROR)
+    {
+        LOG_DEBUG("Failed to set socket option SO_REUSEADDR: %d\n", WSAGetLastError());
+        closesocket(SsdpSocket);
+        return FALSE;
+    }
+
+    // Set socket timeout for receiving responses
+    DWORD Timeout = SSDP_TIMEOUT; // 5 second timeout
     if (setsockopt(SsdpSocket, SOL_SOCKET, SO_RCVTIMEO, (PCSTR)&Timeout, sizeof(Timeout)) == SOCKET_ERROR)
     {
         LOG_DEBUG("Failed to set socket timeout: %d\n", WSAGetLastError());
@@ -58,20 +65,21 @@ DiscoverUPnPDevice(
         return FALSE;
     }
 
-    // setup a multicast address for SSDP, this is the standard address for SSDP
+    // Setup multicast address for SSDP
     memset(&MulticastAddress, 0, sizeof(MulticastAddress));
     MulticastAddress.sin_family = AF_INET;
     MulticastAddress.sin_port = htons(SSDP_PORT); // SSDP port 1900
     inet_pton(AF_INET, SSDP_MULTICAST, &MulticastAddress.sin_addr);
 
+    // Send M-SEARCH request
     if (sendto(
-            SsdpSocket, 
-            SSDP_MSEARCH, 
-            (INT)strlen(SSDP_MSEARCH),
-            0,
-            (struct sockaddr*)&MulticastAddress,
-            sizeof(MulticastAddress)
-        ) == SOCKET_ERROR )
+        SsdpSocket,
+        SSDP_MSEARCH,
+        (INT)strlen(SSDP_MSEARCH),
+        0,
+        (struct sockaddr*)&MulticastAddress,
+        sizeof(MulticastAddress)
+    ) == SOCKET_ERROR)
     {
         LOG_DEBUG("Failed to send SSDP M-SEARCH request: %d\n", WSAGetLastError());
         closesocket(SsdpSocket);
@@ -80,15 +88,20 @@ DiscoverUPnPDevice(
 
     LOG_INFO("Sent SSDP M-SEARCH request to %s:%d\n", SSDP_MULTICAST, SSDP_PORT);
 
-    while( TRUE )
+    CHAR SsdpResponse[SSDP_MAX_RESPONSE_SIZE];
+    struct sockaddr_in ResponseAddress;
+    INT ResponseAddressSize = sizeof(ResponseAddress);
+
+    // Wait for responses
+    while (TRUE)
     {
         BytesReceived = recvfrom(
             SsdpSocket,
             SsdpResponse,
             sizeof(SsdpResponse) - 1, // leave space for null terminator
             0,
-            (struct sockaddr*)&LocalAddress,
-            &(INT)LocalAddressSize
+            (struct sockaddr*)&ResponseAddress,
+            &ResponseAddressSize
         );
 
         if (BytesReceived == SOCKET_ERROR)
@@ -97,7 +110,7 @@ DiscoverUPnPDevice(
             if (Error == WSAETIMEDOUT)
             {
                 LOG_TRACE("No more SSDP responses received, timeout reached.\n");
-                break; // no more responses
+                break;
             }
             else
             {
@@ -110,8 +123,8 @@ DiscoverUPnPDevice(
         SsdpResponse[BytesReceived] = '\0'; // null terminate response
 
         CHAR AddrStr[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(LocalAddress.sin_addr), AddrStr, INET_ADDRSTRLEN);
-        LOG_INFO("Received SSDP response from %s:%d\n", AddrStr, ntohs(LocalAddress.sin_port));
+        inet_ntop(AF_INET, &(ResponseAddress.sin_addr), AddrStr, INET_ADDRSTRLEN);
+        LOG_INFO("Received SSDP response from %s:%d\n", AddrStr, ntohs(ResponseAddress.sin_port));
 
         // Check if the response contains a location URL
         LocationUrl = XmlGetLocationUrl(SsdpResponse);
@@ -122,7 +135,7 @@ DiscoverUPnPDevice(
             if (ParseUrl(LocationUrl, pDevice->Host, pDevice->Path, &pDevice->Port))
             {
                 // Store the control URL for SOAP requests
-                snprintf(pDevice->ControlUrl, SSDP_MAX_URL_SIZE, "%s%s", pDevice->Path, "/control");
+                snprintf(pDevice->ControlUrl, SSDP_MAX_URL_SIZE, "%s", pDevice->Path);
                 free(LocationUrl);
                 closesocket(SsdpSocket);
                 return TRUE; // successfully discovered UPnP device
@@ -130,19 +143,18 @@ DiscoverUPnPDevice(
             else
             {
                 LOG_DEBUG("Failed to parse location URL: %s\n", LocationUrl);
+                free(LocationUrl);
             }
         }
     }
 
-   /* strchr();*/
-
     closesocket(SsdpSocket);
     return FALSE;
-};
+}
 
 BOOL
 GetDeviceDescription(
-    _In_  PUPNP_DEVICE pDevice
+    _In_ PUPNP_DEVICE pDevice
 )
 {
     SOCKET HttpSocket;
@@ -150,55 +162,57 @@ GetDeviceDescription(
     CHAR Request[1024];
     CHAR Response[SSDP_MAX_RESPONSE_SIZE];
     INT BytesSent;
-    INT BytesRecieved;
+    INT BytesReceived;
     PSTR ControlUrl;
 
     HttpSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (HttpSocket == INVALID_SOCKET) 
+    if (HttpSocket == INVALID_SOCKET)
     {
-        LOG_DEBUG( "Failed to create HTTP socket: %d\n", WSAGetLastError() );
+        LOG_DEBUG("Failed to create HTTP socket: %d\n", WSAGetLastError());
         return FALSE;
     }
 
     memset(&ServerAddress, 0, sizeof(ServerAddress));
     ServerAddress.sin_family = AF_INET;
     ServerAddress.sin_port = htons(pDevice->Port);
-    inet_pton(AF_INET, pDevice->Port, &ServerAddress.sin_addr);
+    // FIXED: Use Host instead of Port for inet_pton
+    inet_pton(AF_INET, pDevice->Host, &ServerAddress.sin_addr);
 
     if (connect(HttpSocket, (struct sockaddr*)&ServerAddress, sizeof(ServerAddress)) == SOCKET_ERROR)
     {
-        LOG_DEBUG("Failed to connect to device %d\n", WSAGetLastError() );
+        LOG_DEBUG("Failed to connect to device: %d\n", WSAGetLastError());
         closesocket(HttpSocket);
         return FALSE;
     }
 
-    snprintf( Request, sizeof(Request), 
-         "GET %s HTTP/1.1\r\n"
-         "HOST: %s:%d\r\n"
-         "CONNECTION: close\r\n"
-         "\r\n",
+    snprintf(Request, sizeof(Request),
+        "GET %s HTTP/1.1\r\n"
+        "HOST: %s:%d\r\n"
+        "CONNECTION: close\r\n"
+        "\r\n",
         pDevice->Path, pDevice->Host, pDevice->Port
     );
-     
-    BytesSent = send(HttpSocket, Request, (INT)strlen(Request), NULL);
+
+    BytesSent = send(HttpSocket, Request, (INT)strlen(Request), 0);
     if (BytesSent == SOCKET_ERROR)
     {
-        LOG_DEBUG("Failed to recieve HTTP request %d\n", WSAGetLastError());
+        LOG_DEBUG("Failed to send HTTP request: %d\n", WSAGetLastError());
         closesocket(HttpSocket);
         return FALSE;
     }
 
-    BytesRecieved = recv( HttpSocket, Response, sizeof( Response ) - 1, NULL );
-    if( BytesRecieved == SOCKET_ERROR )
+    BytesReceived = recv(HttpSocket, Response, sizeof(Response) - 1, 0);
+    if (BytesReceived == SOCKET_ERROR)
     {
-        LOG_DEBUG("Failed to recieve HTTP response %d\n", WSAGetLastError());
+        LOG_DEBUG("Failed to receive HTTP response: %d\n", WSAGetLastError());
         closesocket(HttpSocket);
         return FALSE;
     }
 
-    Response[BytesRecieved] = '\0';
+    Response[BytesReceived] = '\0';
     closesocket(HttpSocket);
 
+    // Look for WANIPConnection service
     ControlUrl = XmlGetValue(
         Response,
         "<serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>",
@@ -207,23 +221,33 @@ GetDeviceDescription(
 
     if (ControlUrl)
     {
-        PSTR UrlStart = strstr(ControlUrl, "<ControlUrl>");
+        PSTR UrlStart = strstr(ControlUrl, "<controlURL>");
         if (UrlStart == NULL)
         {
-            return FALSE;
+            // Try case variations
+            UrlStart = strstr(ControlUrl, "<ControlURL>");
+            if (UrlStart == NULL)
+            {
+                free(ControlUrl);
+                return FALSE;
+            }
         }
         UrlStart += 12; // strlen("<controlURL>")
 
         PSTR UrlEnd = strstr(UrlStart, "</controlURL>");
         if (UrlEnd == NULL)
         {
-            return FALSE;
+            UrlEnd = strstr(UrlStart, "</ControlURL>");
+            if (UrlEnd == NULL)
+            {
+                free(ControlUrl);
+                return FALSE;
+            }
         }
 
         INT64 UrlLen = UrlEnd - UrlStart;
-        if( UrlLen < sizeof( pDevice->ControlUrl ))
+        if (UrlLen < sizeof(pDevice->ControlUrl))
         {
-            //strncpy_s(pDevice->ControlUrl, sizeof( pDevice->ControlUrl ), UrlStart, UrlLen);
             strncpy_s(pDevice->ControlUrl, SSDP_MAX_URL_SIZE, UrlStart, UrlLen);
             pDevice->ControlUrl[UrlLen] = '\0';
         }
@@ -234,17 +258,15 @@ GetDeviceDescription(
     return TRUE;
 }
 
-
-BOOL 
+BOOL
 GetPublicIpAddress(
-    _In_  PUPNP_DEVICE pDevice,
+    _In_ PUPNP_DEVICE pDevice,
     _Out_ PSTR PublicIpBuffer,
-    _In_  INT64 BufferSize
+    _In_ INT64 BufferSize
 )
 {
-
     SOCKET HttpSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if( HttpSocket == INVALID_SOCKET) 
+    if (HttpSocket == INVALID_SOCKET)
     {
         LOG_DEBUG("Failed to create HTTP socket: %d\n", WSAGetLastError());
         return FALSE;
@@ -256,9 +278,9 @@ GetPublicIpAddress(
     ServerAddress.sin_port = htons(pDevice->Port);
     inet_pton(AF_INET, pDevice->Host, &ServerAddress.sin_addr);
 
-    if ( connect(HttpSocket, (struct sockaddr*)&ServerAddress, sizeof(ServerAddress)) == SOCKET_ERROR)
+    if (connect(HttpSocket, (struct sockaddr*)&ServerAddress, sizeof(ServerAddress)) == SOCKET_ERROR)
     {
-        LOG_DEBUG("Failed to connect to device %d\n", WSAGetLastError());
+        LOG_DEBUG("Failed to connect to device: %d\n", WSAGetLastError());
         closesocket(HttpSocket);
         return FALSE;
     }
@@ -311,7 +333,6 @@ GetPublicIpAddress(
         return FALSE;
     }
 
-    //strncpy_s(PublicIpBuffer, IpAddress, BufferSize - 1);
     strncpy_s(PublicIpBuffer, BufferSize, IpAddress, _TRUNCATE);
     PublicIpBuffer[BufferSize - 1] = '\0'; // ensure null termination
     free(IpAddress);
@@ -321,92 +342,90 @@ GetPublicIpAddress(
     return TRUE;
 }
 
+// XML parsing functions
 
-// XML parsing   
-
-PSTR 
+PSTR
 XmlGetValue(
     _In_ PCSTR Xml,
-    _In_ PCSTR RootTag,
+    _In_ PCSTR StartTag,
     _In_ PCSTR EndTag
 )
 {
-    PSTR Start = strstr( Xml, RootTag );
-    if ( Start == NULL )
+    PSTR Start = strstr(Xml, StartTag);
+    if (Start == NULL)
     {
         return NULL;
     }
 
-    Start += strlen(RootTag);
+    Start += strlen(StartTag);
     PSTR End = strstr(Start, EndTag);
-    if ( End == NULL )
+    if (End == NULL)
     {
         return NULL;
     }
 
     INT64 Length = End - Start;
-    PSTR Value = malloc( Length + 1 );
-    if ( Value == NULL )
+    PSTR Value = malloc(Length + 1);
+    if (Value == NULL)
     {
-        free(Value);
         return NULL;
     }
 
-    //strncpy( Value, Start, Length );
-    strncpy_s(Value, Length + 1, Start, Length); // ensure null termination
+    strncpy_s(Value, Length + 1, Start, Length);
     Value[Length] = '\0';
     return Value;
 }
 
-
-PSTR 
+PSTR
 XmlGetLocationUrl(
     _In_ PCSTR Xml
 )
 {
-    PSTR Start = strstr(Xml, "LOCATION:");\
-    if( Start == NULL )
+    PSTR Start = strstr(Xml, "location:");
+    if (Start == NULL)
     {
         Start = strstr(Xml, "Location:"); // case insensitive
         if (Start == NULL)
         {
-            return NULL;
+            Start = strstr(Xml, "LOCATION:");
+            if (Start == NULL)
+            {
+                return NULL;
+            }
         }
-        return NULL;
     }
 
-    PSTR UrlStart = strstr(Start, ":");
-    if( UrlStart == NULL)
+    PSTR UrlStart = strchr(Start, ':');
+    if (UrlStart == NULL)
     {
         return NULL;
     }
     UrlStart++; // move past the colon
 
-    while( *UrlStart == ' ' || *UrlStart == '\t') // skip whitespace
+    while (*UrlStart == ' ' || *UrlStart == '\t') // skip whitespace
     {
         UrlStart++;
     }
 
     PSTR UrlEnd = UrlStart;
-    while( *UrlEnd != '\r' && *UrlEnd != '\n' && *UrlEnd) // find end of URL
+    while (*UrlEnd != '\r' && *UrlEnd != '\n' && *UrlEnd != '\0') // find end of URL
     {
         UrlEnd++;
     }
 
     INT64 UrlLength = UrlEnd - UrlStart;
     PSTR Url = malloc(UrlLength + 1);
-    if( Url == NULL )
+    if (Url == NULL)
     {
         return NULL;
     }
 
-    //strncpy(Url, UrlStart, UrlLength);
-    strncpy_s(Url, UrlLength + 1, UrlStart, UrlLength); // ensure null termination
+    strncpy_s(Url, UrlLength + 1, UrlStart, UrlLength);
     Url[UrlLength] = '\0'; // null terminate the URL
     return Url;
 }
 
-BOOL 
+BOOL
 ParseUrl(
     _In_ PCSTR Url,
     _Out_ PSTR Host,
@@ -414,7 +433,7 @@ ParseUrl(
     _Out_ PINT16 Port
 )
 {
-    if( strncmp( Url, "http://", 7) != 0 )
+    if (strncmp(Url, "http://", 7) != 0)
     {
         LOG_DEBUG("URL does not start with http://\n");
         return FALSE;
@@ -424,14 +443,14 @@ ParseUrl(
     PSTR PortStart = strchr(HostStart, ':');
     PSTR PathStart = strchr(HostStart, '/');
 
-    if (PortStart == NULL && PathStart == NULL)
+    if (PathStart == NULL)
     {
-        LOG_DEBUG("Invalid URL format, no port or path found.\n");
+        LOG_DEBUG("Invalid URL format, no path found.\n");
         return FALSE;
     }
 
     INT64 HostLength = 0;
-    if( PortStart != NULL && PortStart < PathStart )
+    if (PortStart != NULL && PortStart < PathStart)
     {
         HostLength = PortStart - HostStart;
         *Port = (INT16)atoi(PortStart + 1); // Port is after the colon
@@ -442,12 +461,10 @@ ParseUrl(
         *Port = 80; // default HTTP port
     }
 
-    //strncpy(Host, HostStart, HostLength);
-    strncpy_s(Host, HostLength, HostStart, HostLength); // ensure null termination
+    strncpy_s(Host, SSDP_MAX_URL_SIZE, HostStart, HostLength);
     Host[HostLength] = '\0'; // null terminate the host string
 
-    //strcpy(Path, PathStart);
-    strcpy_s(Path, SSDP_MAX_URL_SIZE, PathStart); // copy path or set to root
+    strcpy_s(Path, SSDP_MAX_URL_SIZE, PathStart); // copy path
 
     return TRUE;
 }
